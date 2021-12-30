@@ -1183,25 +1183,32 @@ Status DBImpl::Delete(const WriteOptions& options, const Slice& key) {
 }
 
 Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
+  // 将数据包装为Writer
   Writer w(&mutex_);
   w.batch = updates;
   w.sync = options.sync;
   w.done = false;
 
+  // 加锁
   MutexLock l(&mutex_);
+  // 入队列
   writers_.push_back(&w);
+  // 只有队首的writer所在的线程才有执行权，其他的线程只能等着
   while (!w.done && &w != writers_.front()) {
     w.cv.Wait();
   }
+  // 队首的 writer 替后面的writer完成写入数据的任务后，会唤醒这些 writer 所在的线程
   if (w.done) {
     return w.status;
   }
 
   // May temporarily unlock and wait.
+  // 在开始写入前需要确保mem_有空间可以写
   Status status = MakeRoomForWrite(updates == nullptr);
   uint64_t last_sequence = versions_->LastSequence();
   Writer* last_writer = &w;
   if (status.ok() && updates != nullptr) {  // nullptr batch is for compactions
+    // 当前 writer 会按照一定的规则去把这个writer后面的其他writer需要写入的数据拿过来，包装成一个大的Batch
     WriteBatch* updates = BuildBatchGroup(&last_writer);
     WriteBatchInternal::SetSequence(updates, last_sequence + 1);
     last_sequence += WriteBatchInternal::Count(updates);
@@ -1212,6 +1219,7 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
     // into mem_.
     {
       mutex_.Unlock();
+      // 先把数据写入WAL中
       status = log_->AddRecord(WriteBatchInternal::Contents(updates));
       bool sync_error = false;
       if (status.ok() && options.sync) {
@@ -1221,6 +1229,7 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
         }
       }
       if (status.ok()) {
+        // 再把数据写入到 MemTable 中
         status = WriteBatchInternal::InsertInto(updates, mem_);
       }
       mutex_.Lock();
@@ -1235,7 +1244,8 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
 
     versions_->SetLastSequence(last_sequence);
   }
-
+  // 将已经完成数据写入的writer从队列中抛出
+  // 并且通知他们所在的线程
   while (true) {
     Writer* ready = writers_.front();
     writers_.pop_front();
@@ -1248,6 +1258,8 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
   }
 
   // Notify new head of write queue
+  // 一个 batch 写完之后，这个 batch 后面的 writer 可能现在处于等待状态
+  // 所以现在需要唤醒他
   if (!writers_.empty()) {
     writers_.front()->cv.Signal();
   }
