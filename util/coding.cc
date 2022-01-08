@@ -6,6 +6,11 @@
 
 namespace leveldb {
 
+/**
+ * 定长编码，默认采用小端序，直接用memcpy
+ * @param dst
+ * @param value
+ */
 void EncodeFixed32(char* dst, uint32_t value) {
   if (port::kLittleEndian) {
     memcpy(dst, &value, sizeof(value));
@@ -16,7 +21,11 @@ void EncodeFixed32(char* dst, uint32_t value) {
     dst[3] = (value >> 24) & 0xff;
   }
 }
-
+/**
+ * 定长编码，和uint32_t版本类似
+ * @param dst
+ * @param value
+ */
 void EncodeFixed64(char* dst, uint64_t value) {
   if (port::kLittleEndian) {
     memcpy(dst, &value, sizeof(value));
@@ -43,7 +52,13 @@ void PutFixed64(std::string* dst, uint64_t value) {
   EncodeFixed64(buf, value);
   dst->append(buf, sizeof(buf));
 }
-
+/**
+ * @param dst
+ * @param v
+ * @return 为32bit的整数v变长编码
+ * 编码的方案是原数据按照每7个bit为一组，如果后面还有数据则当前字节的第8个bit为1，否则为0
+ * 低字节存储在低地址
+ */
 char* EncodeVarint32(char* dst, uint32_t v) {
   // Operate on characters as unsigneds
   unsigned char* ptr = reinterpret_cast<unsigned char*>(dst);
@@ -77,7 +92,12 @@ void PutVarint32(std::string* dst, uint32_t v) {
   char* ptr = EncodeVarint32(buf, v);
   dst->append(buf, ptr - buf);
 }
-
+/**
+ * 和uint32_t类似
+ * @param dst
+ * @param v
+ * @return
+ */
 char* EncodeVarint64(char* dst, uint64_t v) {
   static const int B = 128;
   unsigned char* ptr = reinterpret_cast<unsigned char*>(dst);
@@ -100,6 +120,11 @@ void PutLengthPrefixedSlice(std::string* dst, const Slice& value) {
   dst->append(value.data(), value.size());
 }
 
+/**
+ *
+ * @param v
+ * @return 返回v这个数字用变长编码所需要的字节长度
+ */
 int VarintLength(uint64_t v) {
   int len = 1;
   while (v >= 128) {
