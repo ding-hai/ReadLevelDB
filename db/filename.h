@@ -20,13 +20,13 @@ namespace leveldb {
 class Env;
 
 enum FileType {
-  kLogFile,
-  kDBLockFile,
-  kTableFile,
-  kDescriptorFile,
-  kCurrentFile,
+  kLogFile, // WAL Log File
+  kDBLockFile, // 文件锁 文件
+  kTableFile, // .ldb文件
+  kDescriptorFile, // Manifest文件
+  kCurrentFile, // CURRENT 文件
   kTempFile,
-  kInfoLogFile  // Either the current one, or an old one
+  kInfoLogFile  // Either the current one, or an old one 调试日志文件
 };
 
 // Return the name of the log file with the specified number
