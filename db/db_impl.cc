@@ -219,7 +219,9 @@ void DBImpl::MaybeIgnoreError(Status* s) const {
     *s = Status::OK();
   }
 }
-
+/**
+ * 这个函数负责删除所有过期的文件
+ */
 void DBImpl::DeleteObsoleteFiles() {
   mutex_.AssertHeld();
 
@@ -234,6 +236,7 @@ void DBImpl::DeleteObsoleteFiles() {
   versions_->AddLiveFiles(&live);
 
   std::vector<std::string> filenames;
+  // 获取db目录下所有的文件名
   env_->GetChildren(dbname_, &filenames);  // Ignoring errors on purpose
   uint64_t number;
   FileType type;
@@ -242,6 +245,11 @@ void DBImpl::DeleteObsoleteFiles() {
       bool keep = true;
       switch (type) {
         case kLogFile:
+          // [WAL LOG] 3:
+          // 删除哪些文件的逻辑在这里定义
+          // 由于 minor compact之后，versions 的 log number 会是需要最新的 log file 的 number
+          // 所有小于这个 log number 的 log file 都可以被删除
+          // pre log number 已经废弃了
           keep = ((number >= versions_->LogNumber()) ||
                   (number == versions_->PrevLogNumber()));
           break;
@@ -332,6 +340,7 @@ Status DBImpl::Recover(VersionEdit* edit, bool* save_manifest) {
   uint64_t number;
   FileType type;
   std::vector<uint64_t> logs;
+  // [WAL LOG] 4.1 : 恢复的时候使用db目录下所有的 wal log 文件
   for (size_t i = 0; i < filenames.size(); i++) {
     if (ParseFileName(filenames[i], &number, &type)) {
       expected.erase(number);
@@ -347,6 +356,7 @@ Status DBImpl::Recover(VersionEdit* edit, bool* save_manifest) {
   }
 
   // Recover in the order in which the logs were generated
+  // [WAL LOG] 4.2 : 按照 wal log 文件生成的顺序依次 apply
   std::sort(logs.begin(), logs.end());
   for (size_t i = 0; i < logs.size(); i++) {
     s = RecoverLogFile(logs[i], (i == logs.size() - 1), save_manifest, edit,
@@ -427,6 +437,7 @@ Status DBImpl::RecoverLogFile(uint64_t log_number, bool last_log,
       mem = new MemTable(internal_comparator_);
       mem->Ref();
     }
+    // [WAL LOG] 4.3: 将 wal log 中解析的内容插入到 mem table 中
     status = WriteBatchInternal::InsertInto(&batch, mem);
     MaybeIgnoreError(&status);
     if (!status.ok()) {
@@ -549,6 +560,8 @@ void DBImpl::CompactMemTable() {
 
   // Replace immutable memtable with the generated Table
   if (s.ok()) {
+  	// [WAL LOG] 2:
+  	// minor compact之后会更新当前的logfile_number, 所有小于这个number的wal log file都会被删除
     edit.SetPrevLogNumber(0);
     edit.SetLogNumber(logfile_number_);  // Earlier logs no longer needed
     s = versions_->LogAndApply(&edit, &mutex_);
@@ -559,6 +572,8 @@ void DBImpl::CompactMemTable() {
     imm_->Unref();
     imm_ = nullptr;
     has_imm_.store(false, std::memory_order_release);
+    // [WAL LOG] 3:
+    // 删除过期文件
     DeleteObsoleteFiles();
   } else {
     RecordBackgroundError(s);
@@ -1367,6 +1382,9 @@ Status DBImpl::MakeRoomForWrite(bool force) {
       }
       delete log_;
       delete logfile_;
+      // [WAL LOG] 1:
+      // 将原来的wal log文件freeze，创建一个新的wal log
+      // 同时把 mem_ 赋值给 imm_ , 然后创建一个新的 MemTable 赋值给 mem_
       logfile_ = lfile;
       logfile_number_ = new_log_number;
       log_ = new log::Writer(lfile);
@@ -1508,11 +1526,13 @@ Status DB::Open(const Options& options, const std::string& dbname, DB** dbptr) {
     }
   }
   if (s.ok() && save_manifest) {
+  	// [WAL LOG] 5.1: 如果在恢复的过程中将mem_中的数据落盘了，那么就会更新log number
     edit.SetPrevLogNumber(0);  // No older logs needed after recovery.
     edit.SetLogNumber(impl->logfile_number_);
     s = impl->versions_->LogAndApply(&edit, &impl->mutex_);
   }
   if (s.ok()) {
+  	// [WAL LOG] 5.2: 如果更新了log number就会把之前的删除
     impl->DeleteObsoleteFiles();
     impl->MaybeScheduleCompaction();
   }
