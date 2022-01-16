@@ -34,7 +34,13 @@ struct Table::Rep {
   BlockHandle metaindex_handle;  // Handle to metaindex_block: saved from footer
   Block* index_block;
 };
-
+/*
+ * 解析Sorted Table文件
+ * 首先读取Footer
+ * 然后根据Footer中存储的 index block offset 和 index block size 读取index block， 从而构造index_block对象
+ * 最后根据Footer中存储的 metaindex block 的 offset 和 size 读取metaindex block，
+ * 从 metaindex block 中解析到 filter block 的 offset 和 size，从而构造出filter对象
+ */
 Status Table::Open(const Options& options, RandomAccessFile* file,
                    uint64_t size, Table** table) {
   *table = nullptr;
@@ -92,13 +98,17 @@ void Table::ReadMeta(const Footer& footer) {
   if (rep_->options.paranoid_checks) {
     opt.verify_checksums = true;
   }
+  // 根据footer中 metaindex block 的 offset 和 size，读取metaindex block
+  // 数据存储在 contents 中
   BlockContents contents;
   if (!ReadBlock(rep_->file, opt, footer.metaindex_handle(), &contents).ok()) {
     // Do not propagate errors since meta info is not needed for operation
     return;
   }
+  // 根据 metaindex block中的数据构造 metaindex Block
   Block* meta = new Block(contents);
 
+  // 目的是在meta中找到filter的offset 和 size， 从而解析出Filter Block
   Iterator* iter = meta->NewIterator(BytewiseComparator());
   std::string key = "filter.";
   key.append(rep_->options.filter_policy->Name());
@@ -123,6 +133,7 @@ void Table::ReadFilter(const Slice& filter_handle_value) {
   if (rep_->options.paranoid_checks) {
     opt.verify_checksums = true;
   }
+  // 根据 filter block 的 offset 和 size 读取filter block 的内容放入 block中
   BlockContents block;
   if (!ReadBlock(rep_->file, opt, filter_handle, &block).ok()) {
     return;
@@ -130,6 +141,7 @@ void Table::ReadFilter(const Slice& filter_handle_value) {
   if (block.heap_allocated) {
     rep_->filter_data = block.data.data();  // Will need to delete later
   }
+  // 根据读取的filter block数据，构造一个FilterBlockReader
   rep_->filter = new FilterBlockReader(rep_->options.filter_policy, block.data);
 }
 
@@ -176,8 +188,12 @@ Iterator* Table::BlockReader(void* arg, const ReadOptions& options,
       if (cache_handle != nullptr) {
         block = reinterpret_cast<Block*>(block_cache->Value(cache_handle));
       } else {
+        // handle 中存储的是 data block 的 offset 和 length
+        // 读取 data block 的数据放在 contents 中
         s = ReadBlock(table->rep_->file, options, handle, &contents);
         if (s.ok()) {
+          // 用 contents 构造一个Block
+          // 这个 Block 是一个 Data Block
           block = new Block(contents);
           if (contents.cachable && options.fill_cache) {
             cache_handle = block_cache->Insert(key, block, block->size(),
@@ -195,6 +211,8 @@ Iterator* Table::BlockReader(void* arg, const ReadOptions& options,
 
   Iterator* iter;
   if (block != nullptr) {
+    // block是一个 data block
+    // 构造一个迭代器
     iter = block->NewIterator(table->rep_->options.comparator);
     if (cache_handle == nullptr) {
       iter->RegisterCleanup(&DeleteBlock, block, nullptr);
@@ -217,19 +235,24 @@ Status Table::InternalGet(const ReadOptions& options, const Slice& k, void* arg,
                           void (*handle_result)(void*, const Slice&,
                                                 const Slice&)) {
   Status s;
+  //
   Iterator* iiter = rep_->index_block->NewIterator(rep_->options.comparator);
   iiter->Seek(k);
   if (iiter->Valid()) {
-    Slice handle_value = iiter->value();
+    Slice handle_value = iiter->value(); // 这里是data block的offset 和 size
     FilterBlockReader* filter = rep_->filter;
     BlockHandle handle;
     if (filter != nullptr && handle.DecodeFrom(&handle_value).ok() &&
         !filter->KeyMayMatch(handle.offset(), k)) {
       // Not found
+      // filter 中没有找到这个key
     } else {
+      // 在filter 中找到这个key
+      // 所以有必要在 data block 中查找这个 key
       Iterator* block_iter = BlockReader(this, options, iiter->value());
       block_iter->Seek(k);
       if (block_iter->Valid()) {
+        // 找到这个 key 对应的 value 了
         (*handle_result)(arg, block_iter->key(), block_iter->value());
       }
       s = block_iter->status();

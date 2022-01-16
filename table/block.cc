@@ -17,6 +17,7 @@
 namespace leveldb {
 
 inline uint32_t Block::NumRestarts() const {
+  // 重启点个数在每个block的最后 4bytes
   assert(size_ >= sizeof(uint32_t));
   return DecodeFixed32(data_ + size_ - sizeof(uint32_t));
 }
@@ -33,6 +34,8 @@ Block::Block(const BlockContents& contents)
       // The size is too small for NumRestarts()
       size_ = 0;
     } else {
+      // 根据 重启点个数可以计算出重启点位置列表的offset
+      // 每个重启点位置占用4bytes， 所以重启点位置列表的offset=size- NumRestarts()*4 - 重启点个数占用的4bytes
       restart_offset_ = size_ - (1 + NumRestarts()) * sizeof(uint32_t);
     }
   }
@@ -163,6 +166,10 @@ class Block::Iter : public Iterator {
   virtual void Seek(const Slice& target) {
     // Binary search in restart array to find the last restart point
     // with a key < target
+    // 先在重启点中二分查找
+    // 找到 key < target 的重启点之后
+    // 从这个重启点开始线性查找，直到找到一个key >= target /// TODO 为什么是大于等于， 大于不就不正确了吗
+    // 或者直到这个 block 的重启点位置数组的 offset 那里
     uint32_t left = 0;
     uint32_t right = num_restarts_ - 1;
     while (left < right) {
@@ -234,13 +241,20 @@ class Block::Iter : public Iterator {
 
     // Decode next entry
     uint32_t shared, non_shared, value_length;
+    // Entry 的格式为：
+    // shared(1byte-5byte) | non_shared(1byte-5byte) | value_length(1byte-5byte) | key 后缀 ｜ value
+    // 从中解析出 shared non_shared, value_length
+    // p 此时指向 key 后缀的位置
     p = DecodeEntry(p, limit, &shared, &non_shared, &value_length);
     if (p == nullptr || key_.size() < shared) {
       CorruptionError();
       return false;
     } else {
+      // 与上一个 key 共享的部分
       key_.resize(shared);
+      // 非共享的部分
       key_.append(p, non_shared);
+      // value部分
       value_ = Slice(p + non_shared, value_length);
       while (restart_index_ + 1 < num_restarts_ &&
              GetRestartPoint(restart_index_ + 1) < current_) {

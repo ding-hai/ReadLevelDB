@@ -66,6 +66,8 @@ Status TableCache::FindTable(uint64_t file_number, uint64_t file_size,
       // We do not cache error results so that if the error is transient,
       // or somebody repairs the file, we recover automatically.
     } else {
+      // 将 构造的Table对象和file放进table cache中
+      // 返回的handle 中的value字段是TableAndFile对象
       TableAndFile* tf = new TableAndFile;
       tf->file = file;
       tf->table = table;
@@ -102,9 +104,14 @@ Status TableCache::Get(const ReadOptions& options, uint64_t file_number,
                        void (*handle_result)(void*, const Slice&,
                                              const Slice&)) {
   Cache::Handle* handle = nullptr;
+  // FindTable 的功能是读取给定file_number的sst table
+  // 此时只是读取了文件中的index block和filter block
+  // 并没有真的把数据全部读取，在真的查找数据的时候才去读取data block
   Status s = FindTable(file_number, file_size, &handle);
   if (s.ok()) {
+    // handle 中包含 table 对象
     Table* t = reinterpret_cast<TableAndFile*>(cache_->Value(handle))->table;
+    // 这里才是真的去读取 data block
     s = t->InternalGet(options, k, arg, handle_result);
     cache_->Release(handle);
   }

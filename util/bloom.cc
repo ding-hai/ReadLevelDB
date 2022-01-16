@@ -53,6 +53,7 @@ class BloomFilterPolicy : public FilterPolicy {
     }
   }
 
+  // TODO bloom filter
   virtual bool KeyMayMatch(const Slice& key, const Slice& bloom_filter) const {
     const size_t len = bloom_filter.size();
     if (len < 2) return false;
